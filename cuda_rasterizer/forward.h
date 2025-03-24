@@ -55,6 +55,7 @@ namespace FORWARD
 		const uint32_t* point_list,
 		int W, int H,
 		const float2* points_xy_image,
+		const float* skews,
 		const float* features,
 		const float4* conic_opacity,
 		float* final_T,
