@@ -24,6 +24,7 @@ namespace FORWARD
 	void preprocess(int P, int D, int M,
 		const float* orig_points,
 		const glm::vec3* scales,
+		const glm::vec3* skews,
 		const float scale_modifier,
 		const glm::vec4* rotations,
 		const float* opacities,

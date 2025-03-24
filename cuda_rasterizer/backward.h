@@ -44,6 +44,7 @@ namespace BACKWARD
 		const float* shs,
 		const bool* clamped,
 		const glm::vec3* scales,
+		const glm::vec3* skews,
 		const glm::vec4* rotations,
 		const float scale_modifier,
 		const float* cov3Ds,
