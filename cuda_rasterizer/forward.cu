@@ -157,6 +157,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const glm::vec3* scales,
 	const glm::vec3* skews,
+	const float* skew_sensitivity,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
@@ -267,6 +268,7 @@ renderCUDA(
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ skews,
+	const float* __restrict__ skew_sensitivity,
 	const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ final_T,
@@ -325,43 +327,60 @@ renderCUDA(
 
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
-		{
-			// Keep track of current position in range
-			contributor++;
+        {
+            // keep track of number of Gaussians tested
+            contributor++;
 
-			// Resample using conic matrix (cf. "Surface 
-			// Splatting" by Zwicker et al., 2001)
-			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			float4 con_o = collected_conic_opacity[j];
-			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
-				continue;
+            // original 2D offset
+            float2 xy = collected_xy[j];
+            float2 d  = { xy.x - pixf.x, xy.y - pixf.y };
 
-			// Eq. (2) from 3D Gaussian splatting paper.
-			// Obtain alpha by multiplying with Gaussian opacity
-			// and its exponential falloff from mean.
-			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
-			if (alpha < 1.0f / 255.0f)
-				continue;
-			float test_T = T * (1 - alpha);
-			if (test_T < 0.0001f)
-			{
-				done = true;
-				continue;
-			}
+            // unpack conic + opacity
+            float4 con_o = collected_conic_opacity[j];
 
-			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+            // --- compute A: the original Gaussian at this pixel ---
+            float power = -0.5f * (con_o.x * d.x*d.x
+                                  + con_o.z * d.y*d.y)
+                          - con_o.y * d.x * d.y;
+            if (power > 0.0f)
+                continue;
+            float A = con_o.w * expf(power);
 
-			T = test_T;
+            // --- compute B: the same Gaussian shifted by (sx,sy) ---
+            int   id     = collected_id[j];
+            float sx     = skews[3*id + 0];
+            float sy     = skews[3*id + 1];
+            
+            
+            
+			// float sz = skews[3*id + 2]; // unused in 2D mask
+            float2 dB    = { d.x - sx, d.y - sy };
+            float powerB = -0.5f * (con_o.x * dB.x*dB.x
+                                    + con_o.z * dB.y*dB.y)
+                           - con_o.y * dB.x * dB.y;
+            float B = con_o.w * expf(powerB);
 
-			// Keep track of last range entry to update this
-			// pixel.
-			last_contributor = contributor;
-		}
+            // --- apply the skew‐mask: A * (1 – exp(–100 * B)) ---
+            float mask      = 1.0f - expf(-skew_sensitivity[id] * B);
+            float alpha_raw = min(0.99f, A);
+            float alpha     = alpha_raw * mask;
+
+			//printf("Gaussian ID: %d, sx: %.6f, sy: %.6f\n A: %.6f, B: %.6f, mask: %.6f, alpha: %.6f\n", id, sx, sy, A, B, mask, alpha);
+            if (alpha < 1.0f / 255.0f)
+                continue;
+
+            // front‐to‐back compositing
+            float test_T = T * (1 - alpha);
+            if (test_T < 0.0001f)
+            {
+                done = true;
+                continue;
+            }
+            for (int ch = 0; ch < CHANNELS; ch++)
+                C[ch] += features[id * CHANNELS + ch] * alpha * T;
+            T = test_T;
+            last_contributor = contributor;
+        }
 	}
 
 	// All threads that treat valid pixel write out their final
@@ -382,6 +401,7 @@ void FORWARD::render(
 	int W, int H,
 	const float2* means2D,
 	const float* skews,
+	const float* skew_sensitivity,
 	const float* colors,
 	const float4* conic_opacity,
 	float* final_T,
@@ -395,6 +415,7 @@ void FORWARD::render(
 		W, H,
 		means2D,
 		skews,
+		skew_sensitivity,
 		colors,
 		conic_opacity,
 		final_T,
@@ -407,6 +428,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
 	const glm::vec3* scales,
 	const glm::vec3* skews,
+	const float* skew_sensitivity,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
@@ -435,6 +457,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		means3D,
 		scales,
 		skews,
+		skew_sensitivity,
 		scale_modifier,
 		rotations,
 		opacities,
