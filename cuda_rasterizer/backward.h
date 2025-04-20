@@ -27,6 +27,8 @@ namespace BACKWARD
 		int W, int H,
 		const float* bg_color,
 		const float2* means2D,
+		const float* skews,
+		const float* skew_sensitivity,
 		const float4* conic_opacity,
 		const float* colors,
 		const float* final_Ts,
@@ -34,6 +36,8 @@ namespace BACKWARD
 		const float* dL_dpixels,
 		float3* dL_dmean2D,
 		float4* dL_dconic2D,
+		float* dL_dskews,
+		float* dL_dskew_sensitivity,
 		float* dL_dopacity,
 		float* dL_dcolors);
 
@@ -59,6 +63,8 @@ namespace BACKWARD
 		glm::vec3* dL_dmeans,
 		float* dL_dcolor,
 		float* dL_dcov3D,
+		float* dL_dskews,
+		float* dL_dskew_sensitivity,
 		float* dL_dsh,
 		glm::vec3* dL_dscale,
 		glm::vec4* dL_drot);

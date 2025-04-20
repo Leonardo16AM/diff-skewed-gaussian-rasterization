@@ -159,6 +159,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
+	obtain(chunk, geom.skews2D, P, 128);
 	obtain(chunk, geom.cov3D, P * 6, 128);
 	obtain(chunk, geom.conic_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -252,6 +253,7 @@ int CudaRasterizer::Rasterizer::forward(
 		means3D,
 		(glm::vec3*)scales,
 		(glm::vec3*)skews,
+		geomState.skews2D,
 		skew_sensitivity,
 		scale_modifier,
 		(glm::vec4*)rotations,
@@ -329,7 +331,7 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list,
 		width, height,
 		geomState.means2D,
-		skews,
+		geomState.skews2D,
 		skew_sensitivity,
 		feature_ptr,
 		geomState.conic_opacity,
@@ -373,6 +375,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dcov3D,
 	float* dL_dsh,
 	float* dL_dscale,
+	float* dL_dskews,
+	float* dL_dskew_sensitivity,
 	float* dL_drot,
 	bool debug)
 {
@@ -403,6 +407,8 @@ void CudaRasterizer::Rasterizer::backward(
 		width, height,
 		background,
 		geomState.means2D,
+		skews,
+		skew_sensitivity,
 		geomState.conic_opacity,
 		color_ptr,
 		imgState.accum_alpha,
@@ -410,6 +416,8 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dpix,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
+		dL_dskews,
+		dL_dskew_sensitivity,
 		dL_dopacity,
 		dL_dcolor), debug)
 
@@ -438,6 +446,8 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
+		dL_dskews,
+		dL_dskew_sensitivity,
 		dL_dsh,
 		(glm::vec3*)dL_dscale,
 		(glm::vec4*)dL_drot), debug)

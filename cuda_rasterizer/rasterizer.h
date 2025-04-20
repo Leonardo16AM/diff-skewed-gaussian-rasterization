@@ -84,6 +84,8 @@ namespace CudaRasterizer
 			float* dL_dcov3D,
 			float* dL_dsh,
 			float* dL_dscale,
+			float* dL_dskews,
+			float* dL_dskew_sensitivity,
 			float* dL_drot,
 			bool debug);
 	};

@@ -361,6 +361,8 @@ __global__ void preprocessCUDA(
 	glm::vec3* dL_dmeans,
 	float* dL_dcolor,
 	float* dL_dcov3D,
+	float* dL_dskews,
+	float* dL_dskew_sensitivity,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
@@ -406,6 +408,8 @@ renderCUDA(
 	int W, int H,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ skews,
+	const float* __restrict__ skew_sensitivity,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ colors,
 	const float* __restrict__ final_Ts,
@@ -413,6 +417,8 @@ renderCUDA(
 	const float* __restrict__ dL_dpixels,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
+	float* __restrict__ dL_dskews,
+	float* __restrict__ dL_dskew_sensitivity,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors)
 {
@@ -580,6 +586,8 @@ void BACKWARD::preprocess(
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_dcov3D,
+	float* dL_dskews,
+	float* dL_dskew_sensitivity,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
@@ -622,6 +630,8 @@ void BACKWARD::preprocess(
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
+		dL_dskews,
+		dL_dskew_sensitivity,
 		dL_dsh,
 		dL_dscale,
 		dL_drot);
@@ -634,6 +644,8 @@ void BACKWARD::render(
 	int W, int H,
 	const float* bg_color,
 	const float2* means2D,
+	const float* skews,
+	const float* skew_sensitivity,
 	const float4* conic_opacity,
 	const float* colors,
 	const float* final_Ts,
@@ -641,6 +653,8 @@ void BACKWARD::render(
 	const float* dL_dpixels,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
+	float* dL_dskews,
+	float* dL_dskew_sensitivity,
 	float* dL_dopacity,
 	float* dL_dcolors)
 {
@@ -650,6 +664,8 @@ void BACKWARD::render(
 		W, H,
 		bg_color,
 		means2D,
+		skews,
+		skew_sensitivity,
 		conic_opacity,
 		colors,
 		final_Ts,
@@ -657,6 +673,8 @@ void BACKWARD::render(
 		dL_dpixels,
 		dL_dmean2D,
 		dL_dconic2D,
+		dL_dskews,
+		dL_dskew_sensitivity,
 		dL_dopacity,
 		dL_dcolors
 		);

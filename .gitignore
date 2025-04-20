@@ -2,7 +2,6 @@ build/
 diff_skewed_gaussian_rasterization.egg-info/
 dist/
 test.py
-visualizer.py
 experiments.ipynb
 *.dump
 .vscode/
