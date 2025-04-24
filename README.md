@@ -1,4 +1,4 @@
-# Diff Skewed Gaussian Rasterization
+# Differential Skewed Gaussian Rasterization
 
 This repository is a fork of [Differential Gaussian Rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization), originally developed by the GRAPHDECO research group at Inria.
 
