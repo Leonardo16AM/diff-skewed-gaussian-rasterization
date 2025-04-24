@@ -275,7 +275,7 @@ __global__ void computeCov2DCUDA(int P,
 
 // Backward pass for the conversion of scale and rotation to a 
 // 3D covariance matrix for each Gaussian. 
-__device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, const float* dL_dcov3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
+__device__ void computeCov3D(int idx, const glm::vec3 scale,  float mod, const glm::vec4 rot, const float* dL_dcov3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
 {
 	// Recompute (intermediate) results for the 3D covariance computation.
 	glm::vec4 q = rot;// / glm::length(rot);
@@ -340,220 +340,276 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 	*dL_drot = float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };//dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
 }
 
-// Backward pass of the preprocessing steps, except
-// for the covariance computation and inversion
-// (those are handled by a previous kernel call)
 template<int C>
 __global__ void preprocessCUDA(
-	int P, int D, int M,
-	const float3* means,
-	const int* radii,
-	const float* shs,
-	const bool* clamped,
-	const glm::vec3* scales,
-	const glm::vec4* rotations,
-	const float scale_modifier,
-	const float* proj,
-	const glm::vec3* campos,
-	const float3* dL_dmean2D,
-	glm::vec3* dL_dmeans,
-	float* dL_dcolor,
-	float* dL_dcov3D,
-	float* dL_dsh,
-	glm::vec3* dL_dscale,
-	glm::vec4* dL_drot)
+    int P, int D, int M,
+    const float3* means3D,
+    const int* radii,
+    const float* shs,
+    const bool* clamped,
+    const glm::vec3* scales,
+    const glm::vec3* skews,
+    const float* skew_sensitivity,
+    const glm::vec4* rotations,
+    const float scale_modifier,
+    const float* cov3D,
+    const float* viewmatrix,
+    const float* projmatrix,
+    const float focal_x, const float focal_y,
+    const float tan_fovx, const float tan_fovy,
+    const glm::vec3* campos,
+    const float3* dL_dmean2D,
+    const float4* dL_dconic2D,
+    float3* dL_dmeans3D,
+    float* dL_dcolor,
+    float* dL_dcov3D,
+    const float2* dL_dskews2D,
+    float* dL_dskews,
+    float* dL_dskew_sensitivity,
+    float* dL_dsh,
+    glm::vec3* dL_dscale,
+    glm::vec4* dL_drot)
 {
-	auto idx = cg::this_grid().thread_rank();
-	if (idx >= P || !(radii[idx] > 0))
-		return;
+    auto idx = cg::this_grid().thread_rank();
+    if (idx >= P || !(radii[idx] > 0)) return;
 
-	float3 m = means[idx];
+    float3 m = means3D[idx];
+    float4 m_hom = transformPoint4x4(m, projmatrix);
+    float m_w = 1.0f / (m_hom.w + 1e-7f);
 
-	// Taking care of gradients from the screenspace points
-	float4 m_hom = transformPoint4x4(m, proj);
-	float m_w = 1.0f / (m_hom.w + 0.0000001f);
+    float mul1 = (projmatrix[0]*m.x + projmatrix[4]*m.y + projmatrix[8]*m.z + projmatrix[12]) * m_w * m_w;
+    float mul2 = (projmatrix[1]*m.x + projmatrix[5]*m.y + projmatrix[9]*m.z + projmatrix[13]) * m_w * m_w;
 
-	// Compute loss gradient w.r.t. 3D means due to gradients of 2D means
-	// from rendering procedure
-	glm::vec3 dL_dmean;
-	float mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
-	float mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
-	dL_dmean.x = (proj[0] * m_w - proj[3] * mul1) * dL_dmean2D[idx].x + (proj[1] * m_w - proj[3] * mul2) * dL_dmean2D[idx].y;
-	dL_dmean.y = (proj[4] * m_w - proj[7] * mul1) * dL_dmean2D[idx].x + (proj[5] * m_w - proj[7] * mul2) * dL_dmean2D[idx].y;
-	dL_dmean.z = (proj[8] * m_w - proj[11] * mul1) * dL_dmean2D[idx].x + (proj[9] * m_w - proj[11] * mul2) * dL_dmean2D[idx].y;
+    glm::vec3 dL_dmean;
+    dL_dmean.x = (projmatrix[0]*m_w - projmatrix[3]*mul1) * dL_dmean2D[idx].x + (projmatrix[1]*m_w - projmatrix[3]*mul2) * dL_dmean2D[idx].y;
+    dL_dmean.y = (projmatrix[4]*m_w - projmatrix[7]*mul1) * dL_dmean2D[idx].x + (projmatrix[5]*m_w - projmatrix[7]*mul2) * dL_dmean2D[idx].y;
+    dL_dmean.z = (projmatrix[8]*m_w - projmatrix[11]*mul1) * dL_dmean2D[idx].x + (projmatrix[9]*m_w - projmatrix[11]*mul2) * dL_dmean2D[idx].y;
+    dL_dmean = -dL_dmean;
+	
+	float3 tmp = dL_dmeans3D[idx];
+	float3 delta = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
+	tmp.x += delta.x;
+	tmp.y += delta.y;
+	tmp.z += delta.z;
+	dL_dmeans3D[idx] = tmp;
 
-	// That's the second part of the mean gradient. Previous computation
-	// of cov2D and following SH conversion also affects it.
-	dL_dmeans[idx] += dL_dmean;
+    if (dL_dskews2D && dL_dskews) {
+        float gradx = dL_dskews2D[idx].x;
+        float grady = dL_dskews2D[idx].y;
 
-	// Compute gradient updates due to computing colors from SHs
-	if (shs)
-		computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh);
+        glm::vec3 dL_dskew_cam;
+        dL_dskew_cam.x = (projmatrix[0]*m_w - projmatrix[3]*mul1) * gradx + (projmatrix[1]*m_w - projmatrix[3]*mul2) * grady;
+        dL_dskew_cam.y = (projmatrix[4]*m_w - projmatrix[7]*mul1) * gradx + (projmatrix[5]*m_w - projmatrix[7]*mul2) * grady;
+        dL_dskew_cam.z = (projmatrix[8]*m_w - projmatrix[11]*mul1)* gradx + (projmatrix[9]*m_w - projmatrix[11]*mul2)* grady;
 
-	// Compute gradient updates due to computing covariance from scale/rotation
-	if (scales)
-		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
+        float3 dL_dskew_world = {
+			viewmatrix[0]*dL_dskew_cam.x + viewmatrix[1]*dL_dskew_cam.y + viewmatrix[2]*dL_dskew_cam.z,
+			viewmatrix[4]*dL_dskew_cam.x + viewmatrix[5]*dL_dskew_cam.y + viewmatrix[6]*dL_dskew_cam.z,
+			viewmatrix[8]*dL_dskew_cam.x + viewmatrix[9]*dL_dskew_cam.y + viewmatrix[10]*dL_dskew_cam.z };
+		
+
+		auto* dL_dskews_f3 = reinterpret_cast<float3*>(dL_dskews);
+        atomicAdd(&dL_dskews_f3[idx].x, dL_dskew_world.x);
+        atomicAdd(&dL_dskews_f3[idx].y, dL_dskew_world.y);
+        atomicAdd(&dL_dskews_f3[idx].z, dL_dskew_world.z);
+    }
+
+    if (shs) computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped,
+                                 (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans3D, (glm::vec3*)dL_dsh);
+
+    if (scales) computeCov3D(idx, scales[idx], scale_modifier, rotations[idx],
+                              dL_dcov3D, dL_dscale, dL_drot);
 }
 
-// Backward version of the rendering procedure.
 template <uint32_t C>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
-	const uint2* __restrict__ ranges,
-	const uint32_t* __restrict__ point_list,
-	int W, int H,
-	const float* __restrict__ bg_color,
-	const float2* __restrict__ points_xy_image,
-	const float4* __restrict__ conic_opacity,
-	const float* __restrict__ colors,
-	const float* __restrict__ final_Ts,
-	const uint32_t* __restrict__ n_contrib,
-	const float* __restrict__ dL_dpixels,
-	float3* __restrict__ dL_dmean2D,
-	float4* __restrict__ dL_dconic2D,
-	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+    const uint2*  __restrict__ ranges,
+    const uint32_t* __restrict__ point_list,
+    int   W, int   H,
+    const float*   __restrict__ bg_color,
+    const float2*  __restrict__ points_xy_image,
+    const float2*  __restrict__ skews2D,
+    const float*   __restrict__ skew_sensitivity,
+    const float4*  __restrict__ conic_opacity,
+    const float*   __restrict__ colors,
+    const float*   __restrict__ final_Ts,
+    const uint32_t*__restrict__ n_contrib,
+    const float*   __restrict__ dL_dpixels,
+          float3*  __restrict__ dL_dmean2D,
+          float4*  __restrict__ dL_dconic2D,
+          float2*  __restrict__ dL_dskews2D,
+          float*   __restrict__ dL_dskew_sensitivity,
+          float*   __restrict__ dL_dopacity,
+          float*   __restrict__ dL_dcolors)
 {
-	// We rasterize again. Compute necessary block info.
-	auto block = cg::this_thread_block();
-	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
-	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
-	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	const uint32_t pix_id = W * pix.y + pix.x;
-	const float2 pixf = { (float)pix.x, (float)pix.y };
+    // Configuración del bloque y determinación de posición del píxel
+    auto block = cg::this_thread_block();
+    const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+    const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+    const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+    const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+    const uint32_t pix_id = W * pix.y + pix.x;
+    const float2 pixf = { (float)pix.x, (float)pix.y };
 
-	const bool inside = pix.x < W&& pix.y < H;
-	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+    const bool inside = pix.x < W && pix.y < H;
+    const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 
-	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-	bool done = !inside;
-	int toDo = range.y - range.x;
+    bool done = !inside;
+    int toDo = range.y - range.x;
 
-	__shared__ int collected_id[BLOCK_SIZE];
-	__shared__ float2 collected_xy[BLOCK_SIZE];
-	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
-	__shared__ float collected_colors[C * BLOCK_SIZE];
+    __shared__ int collected_id[BLOCK_SIZE];
+    __shared__ float2 collected_xy[BLOCK_SIZE];
+    __shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+    __shared__ float collected_colors[C * BLOCK_SIZE];
 
-	// In the forward, we stored the final value for T, the
-	// product of all (1 - alpha) factors. 
-	const float T_final = inside ? final_Ts[pix_id] : 0;
-	float T = T_final;
+    // En el forward, almacenamos el valor final para T,
+    // el producto de todos los factores (1 - alpha).
+    const float T_final = inside ? final_Ts[pix_id] : 0;
+    float T = T_final;
 
-	// We start from the back. The ID of the last contributing
-	// Gaussian is known from each pixel from the forward.
-	uint32_t contributor = toDo;
-	const int last_contributor = inside ? n_contrib[pix_id] : 0;
+    // Comenzamos desde atrás. El ID de la última Gaussiana contribuyente
+    // es conocido desde cada píxel en el forward.
+    uint32_t contributor = toDo;
+    const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	float accum_rec[C] = { 0 };
-	float dL_dpixel[C];
-	if (inside)
-		for (int i = 0; i < C; i++)
-			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+    float accum_rec[C] = { 0 };
+    float dL_dpixel[C];
+    if (inside)
+        for (int i = 0; i < C; i++)
+            dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
-	float last_alpha = 0;
-	float last_color[C] = { 0 };
+    float last_alpha = 0;
+    float last_color[C] = { 0 };
 
-	// Gradient of pixel coordinate w.r.t. normalized 
-	// screen-space viewport corrdinates (-1 to 1)
-	const float ddelx_dx = 0.5 * W;
-	const float ddely_dy = 0.5 * H;
+    // Gradiente de coordenada de píxel con respecto a 
+    // coordenadas de viewport normalizadas (-1 a 1)
+    const float ddelx_dx = 0.5f * W;
+    const float ddely_dy = 0.5f * H;
 
-	// Traverse all Gaussians
-	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
-	{
-		// Load auxiliary data into shared memory, start in the BACK
-		// and load them in revers order.
-		block.sync();
-		const int progress = i * BLOCK_SIZE + block.thread_rank();
-		if (range.x + progress < range.y)
-		{
-			const int coll_id = point_list[range.y - progress - 1];
-			collected_id[block.thread_rank()] = coll_id;
-			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
-			for (int i = 0; i < C; i++)
-				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
-		}
-		block.sync();
+    // Recorrer todas las Gaussianas
+    for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+    {
+        // Cargar datos auxiliares en memoria compartida, comenzando desde ATRÁS
+        // y cargándolos en orden inverso.
+        block.sync();
+        const int progress = i * BLOCK_SIZE + block.thread_rank();
+        if (range.x + progress < range.y)
+        {
+            const int coll_id = point_list[range.y - progress - 1];
+            collected_id[block.thread_rank()] = coll_id;
+            collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+            collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+            for (int i = 0; i < C; i++)
+                collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+        }
+        block.sync();
 
-		// Iterate over Gaussians
-		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
-		{
-			// Keep track of current Gaussian ID. Skip, if this one
-			// is behind the last contributor for this pixel.
-			contributor--;
-			if (contributor >= last_contributor)
-				continue;
+        // Iterar sobre Gaussianas
+        for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+        {
+            // Seguir la pista del ID de la Gaussiana actual. Omitir, si ésta
+            // está detrás del último contribuyente para este píxel.
+            contributor--;
+            if (contributor >= last_contributor)
+                continue;
 
-			// Compute blending values, as before.
-			const float2 xy = collected_xy[j];
-			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			const float4 con_o = collected_conic_opacity[j];
-			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
-				continue;
+            // Calcular valores de mezcla, como antes.
+            const float2 xy = collected_xy[j];
+            const float2 d  = { xy.x - pixf.x, xy.y - pixf.y };
+            const float4 C4 = collected_conic_opacity[j];
 
-			const float G = exp(power);
-			const float alpha = min(0.99f, con_o.w * G);
-			if (alpha < 1.0f / 255.0f)
-				continue;
+            const float G  = __expf(-0.5f*(C4.x*d.x*d.x + C4.z*d.y*d.y) - C4.y*d.x*d.y);
+            const float A_raw = C4.w * G;
+            const float A     = fminf(0.99f, A_raw);
+            const bool  h     = (A_raw <= 0.99f);
 
-			T = T / (1.f - alpha);
-			const float dchannel_dcolor = alpha * T;
+            const uint  gid   = collected_id[j];
+            const float2 s2D  = skews2D[gid];
+            const float2 dB   = { d.x - s2D.x, d.y - s2D.y };
+            const float  B    = C4.w * __expf(-0.5f*(C4.x*dB.x*dB.x + C4.z*dB.y*dB.y) - C4.y*dB.x*dB.y);
 
-			// Propagate gradients to per-Gaussian colors and keep
-			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
-			// pair).
-			float dL_dalpha = 0.0f;
-			const int global_id = collected_id[j];
-			for (int ch = 0; ch < C; ch++)
-			{
-				const float c = collected_colors[ch * BLOCK_SIZE + j];
-				// Update last color (to be used in the next iteration)
-				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
-				last_color[ch] = c;
+            const float  S    = skew_sensitivity[gid];
+            const float  mask = 1.f - __expf(-S * B);
+            const float  alpha= A * mask;
+            if (alpha < 1.f/255.f) continue;
 
-				const float dL_dchannel = dL_dpixel[ch];
-				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
-				// Update the gradients w.r.t. color of the Gaussian. 
-				// Atomic, since this pixel is just one of potentially
-				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
-			}
-			dL_dalpha *= T;
-			// Update last alpha (to be used in the next iteration)
-			last_alpha = alpha;
+            /* ---------- compositing ---------- */
+            T = T / (1.f - alpha);
 
-			// Account for fact that alpha also influences how much of
-			// the background color is added if nothing left to blend
-			float bg_dot_dpixel = 0;
-			for (int i = 0; i < C; i++)
-				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
-			dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
+            /* ---------- dL/dα acumulado ---------- */
+            float dL_dalpha = 0.f;
+			const uint global_id = collected_id[j];
+            for (int ch = 0; ch < C; ++ch) 
+            {
+                const float c = collected_colors[ch * BLOCK_SIZE + j];
+                // Actualizar último color (a usar en la próxima iteración)
+                accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+                last_color[ch] = c;
 
+                const float dL_dchannel = dL_dpixel[ch];
+                dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
+                // Actualizar los gradientes con respecto al color de la Gaussiana.
+                // Atómico, ya que este píxel es solo uno de potencialmente
+                // muchos que fueron afectados por esta Gaussiana.
+				const float dchannel_dcolor = alpha * T;
+                atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+            }
+            dL_dalpha *= T;
+            
+            // Tener en cuenta que alpha también influye en cuánto del
+            // color de fondo se agrega si no queda nada para mezclar
+            float bg_dot_dpixel = 0;
+            for (int i = 0; i < C; i++)
+                bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
+            dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
+            
+             /* ===== DERIVADAS ANALÍTICAS ===== */
+			 const float dalpha_dA = h ? mask : 0.f;        // h·m
+			 const float dalpha_dB = A * S * (1.f - mask);  // A S (1-m)
+			 const float dalpha_dS = A * B * (1.f - mask);  // A B (1-m)
+ 
+			 // -- sensitividad S
+			 atomicAdd(&dL_dskew_sensitivity[gid], dL_dalpha * dalpha_dS);
+ 
+			 // -- conic (cxx,cxy,cyy)  [-½ A (…) ]
+			 const float3 qA = { d.x*d.x,      2.f*d.x*d.y,      d.y*d.y };
+			 const float3 qB = { dB.x*dB.x,    2.f*dB.x*dB.y,    dB.y*dB.y };
+			 const float common = -0.5f * dL_dalpha * A;
+ 
+			 atomicAdd(&dL_dconic2D[gid].x, common * (dalpha_dA * qA.x + dalpha_dB * qB.x));
+			 atomicAdd(&dL_dconic2D[gid].y, common * (dalpha_dA * qA.y + dalpha_dB * qB.y));
+			 atomicAdd(&dL_dconic2D[gid].w, common * (dalpha_dA * qA.z + dalpha_dB * qB.z));
+ 
+			 // -- opacidad base o
+			 float dL_do = dL_dalpha * ( h ? (dalpha_dA * G) : 0.f
+                            +  dalpha_dB * (B / C4.w) );
+			 atomicAdd(&dL_dopacity[gid], dL_do);
 
-			// Helpful reusable temporary variables
-			const float dL_dG = con_o.w * dL_dalpha;
-			const float gdx = G * d.x;
-			const float gdy = G * d.y;
-			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
-			const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
-
-			// Update gradients w.r.t. 2D mean position of the Gaussian
-			atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx * ddelx_dx);
-			atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely * ddely_dy);
-
-			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
-			atomicAdd(&dL_dconic2D[global_id].x, -0.5f * gdx * d.x * dL_dG);
-			atomicAdd(&dL_dconic2D[global_id].y, -0.5f * gdx * d.y * dL_dG);
-			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
-
-			// Update gradients w.r.t. opacity of the Gaussian
-			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
-		}
-	}
+			
+			 // -- skew-pix
+			 const float2 C_dB = { C4.x*dB.x + C4.y*dB.y,
+								   C4.y*dB.x + C4.z*dB.y };
+			
+			 float2 gradS = make_float2(dalpha_dB * B, dalpha_dB * B);
+			 gradS.x *= C_dB.x;  gradS.y *= C_dB.y;
+			 atomicAdd(&dL_dskews2D[gid].x, dL_dalpha * gradS.x);
+			 atomicAdd(&dL_dskews2D[gid].y, dL_dalpha * gradS.y);
+ 
+			 // -- mean2D
+			 const float2 C_d  = { C4.x*d.x + C4.y*d.y,
+								   C4.y*d.x + C4.z*d.y };
+			 float2 g = { dalpha_dA * C_d.x + dalpha_dB * B * C_dB.x,
+  	 						dalpha_dA * C_d.y + dalpha_dB * B * C_dB.y };
+ 
+			 atomicAdd(&dL_dmean2D[gid].x, dL_dalpha * A * g.x * ddelx_dx);
+			 atomicAdd(&dL_dmean2D[gid].y, dL_dalpha * A * g.y * ddely_dy);
+ 
+			 last_alpha = alpha;
+        }
+    }
 }
 
 void BACKWARD::preprocess(
@@ -563,6 +619,8 @@ void BACKWARD::preprocess(
 	const float* shs,
 	const bool* clamped,
 	const glm::vec3* scales,
+	const glm::vec3* skews,
+	const float* skew_sensitivity,
 	const glm::vec4* rotations,
 	const float scale_modifier,
 	const float* cov3Ds,
@@ -572,10 +630,13 @@ void BACKWARD::preprocess(
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
-	const float* dL_dconic,
+	const float* dL_dconic2D,
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_dcov3D,
+	float2* dL_dskews2D,
+	float* dL_dskews,
+	float* dL_dskew_sensitivity,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
@@ -594,7 +655,7 @@ void BACKWARD::preprocess(
 		tan_fovx,
 		tan_fovy,
 		viewmatrix,
-		dL_dconic,
+		dL_dconic2D,
 		(float3*)dL_dmean3D,
 		dL_dcov3D);
 
@@ -608,14 +669,24 @@ void BACKWARD::preprocess(
 		shs,
 		clamped,
 		(glm::vec3*)scales,
+		(glm::vec3*)skews,
+		skew_sensitivity,
 		(glm::vec4*)rotations,
 		scale_modifier,
+		cov3Ds,
+		viewmatrix,
 		projmatrix,
+		focal_x, focal_y,
+		tan_fovx, tan_fovy,
 		campos,
 		(float3*)dL_dmean2D,
-		(glm::vec3*)dL_dmean3D,
+		(float4*)dL_dconic2D,
+		(float3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
+		dL_dskews2D,
+		dL_dskews,
+		dL_dskew_sensitivity,
 		dL_dsh,
 		dL_dscale,
 		dL_drot);
@@ -628,6 +699,8 @@ void BACKWARD::render(
 	int W, int H,
 	const float* bg_color,
 	const float2* means2D,
+	const float2* skews2D,
+	const float* skew_sensitivity,
 	const float4* conic_opacity,
 	const float* colors,
 	const float* final_Ts,
@@ -635,6 +708,8 @@ void BACKWARD::render(
 	const float* dL_dpixels,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
+	float2* dL_dskews2D,
+	float* dL_dskew_sensitivity,
 	float* dL_dopacity,
 	float* dL_dcolors)
 {
@@ -644,6 +719,8 @@ void BACKWARD::render(
 		W, H,
 		bg_color,
 		means2D,
+		skews2D,
+		skew_sensitivity,
 		conic_opacity,
 		colors,
 		final_Ts,
@@ -651,6 +728,8 @@ void BACKWARD::render(
 		dL_dpixels,
 		dL_dmean2D,
 		dL_dconic2D,
+		dL_dskews2D,
+		dL_dskew_sensitivity,
 		dL_dopacity,
 		dL_dcolors
 		);

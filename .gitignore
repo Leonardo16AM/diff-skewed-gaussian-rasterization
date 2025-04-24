@@ -1,3 +1,8 @@
 build/
-diff_gaussian_rasterization.egg-info/
+diff_skewed_gaussian_rasterization.egg-info/
 dist/
+tests/
+experiments.ipynb
+*.dump
+.vscode/
+notes.txt

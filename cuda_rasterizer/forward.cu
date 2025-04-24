@@ -156,6 +156,9 @@ template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const glm::vec3* scales,
+	glm::vec3* skews,
+	float2*    skews2D,
+	const float* skew_sensitivity,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
@@ -182,7 +185,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
-
+	skews2D[idx] = make_float2(0.0f, 0.0f);
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
 	radii[idx] = 0;
@@ -196,6 +199,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	
+	//<<<<<<<<<<<<<<<<Changed from orighinal>>>>>>>>>>>>>>>>>>>>
+	p_hom = transformPoint4x4({p_view.x, p_view.y, p_view.z}, projmatrix);
+	
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -233,6 +240,42 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
+			
+	// Convert skews[idx] (glm::vec3) to float3
+	float3 skew_w = {
+		skews[idx].x,
+		skews[idx].y,
+		skews[idx].z
+	};
+
+	// Transform skew vector to camera space (rotation only, no translation)
+	float3 skew_cam = {
+		viewmatrix[0] * skew_w.x + viewmatrix[4] * skew_w.y + viewmatrix[8]  * skew_w.z,
+		viewmatrix[1] * skew_w.x + viewmatrix[5] * skew_w.y + viewmatrix[9]  * skew_w.z,
+		viewmatrix[2] * skew_w.x + viewmatrix[6] * skew_w.y + viewmatrix[10] * skew_w.z
+	};
+
+	// Apply skew in camera space
+	float3 p_skew_view = {
+		p_view.x + skew_cam.x,
+		p_view.y + skew_cam.y,
+		p_view.z + skew_cam.z
+	};
+
+	// Project skewed point with same projection matrix
+	float4 p_skew_h = transformPoint4x4(p_skew_view, projmatrix);
+	float inv_w_skew = 1.f / (p_skew_h.w + 1e-7f);
+	float2 p_skew_pix = {
+		ndc2Pix(p_skew_h.x * inv_w_skew, W),
+		ndc2Pix(p_skew_h.y * inv_w_skew, H)
+	};
+
+	// Compute 2D pixel displacement due to skew
+	skews2D[idx] = {
+		p_skew_pix.x - point_image.x,
+		p_skew_pix.y - point_image.y
+	};
+
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -265,6 +308,8 @@ renderCUDA(
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
+	const float2* __restrict__ skews2D,
+	const float* __restrict__ skew_sensitivity,
 	const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ final_T,
@@ -323,43 +368,59 @@ renderCUDA(
 
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
-		{
-			// Keep track of current position in range
-			contributor++;
+        {
+            // keep track of number of Gaussians tested
+            contributor++;
 
-			// Resample using conic matrix (cf. "Surface 
-			// Splatting" by Zwicker et al., 2001)
-			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			float4 con_o = collected_conic_opacity[j];
-			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
-				continue;
+            // original 2D offset
+            float2 xy = collected_xy[j];
+            float2 d  = { xy.x - pixf.x, xy.y - pixf.y };
 
-			// Eq. (2) from 3D Gaussian splatting paper.
-			// Obtain alpha by multiplying with Gaussian opacity
-			// and its exponential falloff from mean.
-			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
-			if (alpha < 1.0f / 255.0f)
-				continue;
-			float test_T = T * (1 - alpha);
-			if (test_T < 0.0001f)
-			{
-				done = true;
-				continue;
-			}
+            // unpack conic + opacity
+            float4 con_o = collected_conic_opacity[j];
 
-			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+            // --- compute A: the original Gaussian at this pixel ---
+            float power = -0.5f * (con_o.x * d.x*d.x
+                                  + con_o.z * d.y*d.y)
+                          - con_o.y * d.x * d.y;
+            if (power > 0.0f)
+                continue;
+            float A = con_o.w * expf(power);
 
-			T = test_T;
+            // --- compute B: the same Gaussian shifted by (sx,sy) ---
+            int   id     = collected_id[j];
+            float sx = skews2D[id].x;
+			float sy = skews2D[id].y;
 
-			// Keep track of last range entry to update this
-			// pixel.
-			last_contributor = contributor;
-		}
+            
+			
+            float2 dB    = { d.x - sx, d.y - sy };
+            float powerB = -0.5f * (con_o.x * dB.x*dB.x
+                                    + con_o.z * dB.y*dB.y)
+                           - con_o.y * dB.x * dB.y;
+            float B = con_o.w * expf(powerB);
+
+            // --- apply the skew‐mask: A * (1 – exp(–100 * B)) ---
+            float mask      = 1.0f - expf(-skew_sensitivity[id] * B);
+            float alpha_raw = min(0.99f, A);
+            float alpha     = alpha_raw * mask;
+
+			//printf("Gaussian ID: %d, sx: %.6f, sy: %.6f\n A: %.6f, B: %.6f, mask: %.6f, alpha: %.6f\n", id, sx, sy, A, B, mask, alpha);
+            if (alpha < 1.0f / 255.0f)
+                continue;
+
+            // front‐to‐back compositing
+            float test_T = T * (1 - alpha);
+            if (test_T < 0.0001f)
+            {
+                done = true;
+                continue;
+            }
+            for (int ch = 0; ch < CHANNELS; ch++)
+                C[ch] += features[id * CHANNELS + ch] * alpha * T;
+            T = test_T;
+            last_contributor = contributor;
+        }
 	}
 
 	// All threads that treat valid pixel write out their final
@@ -379,6 +440,8 @@ void FORWARD::render(
 	const uint32_t* point_list,
 	int W, int H,
 	const float2* means2D,
+	const float2* skews2D,
+	const float* skew_sensitivity,
 	const float* colors,
 	const float4* conic_opacity,
 	float* final_T,
@@ -391,6 +454,8 @@ void FORWARD::render(
 		point_list,
 		W, H,
 		means2D,
+		skews2D,
+		skew_sensitivity,
 		colors,
 		conic_opacity,
 		final_T,
@@ -402,6 +467,9 @@ void FORWARD::render(
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
 	const glm::vec3* scales,
+	glm::vec3* skews,
+	float2* skews2D,
+	const float* skew_sensitivity,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
@@ -429,6 +497,9 @@ void FORWARD::preprocess(int P, int D, int M,
 		P, D, M,
 		means3D,
 		scales,
+		skews,
+		skews2D,
+		skew_sensitivity,
 		scale_modifier,
 		rotations,
 		opacities,

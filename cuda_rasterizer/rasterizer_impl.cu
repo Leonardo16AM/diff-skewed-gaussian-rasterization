@@ -159,6 +159,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
+	obtain(chunk, geom.skews2D, P, 128);
 	obtain(chunk, geom.cov3D, P * 6, 128);
 	obtain(chunk, geom.conic_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -207,6 +208,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* colors_precomp,
 	const float* opacities,
 	const float* scales,
+	const float* skews,
+	const float* skew_sensitivity,
 	const float scale_modifier,
 	const float* rotations,
 	const float* cov3D_precomp,
@@ -249,6 +252,9 @@ int CudaRasterizer::Rasterizer::forward(
 		P, D, M,
 		means3D,
 		(glm::vec3*)scales,
+		(glm::vec3*)skews,
+		geomState.skews2D,
+		skew_sensitivity,
 		scale_modifier,
 		(glm::vec4*)rotations,
 		opacities,
@@ -325,6 +331,8 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list,
 		width, height,
 		geomState.means2D,
+		geomState.skews2D,
+		skew_sensitivity,
 		feature_ptr,
 		geomState.conic_opacity,
 		imgState.accum_alpha,
@@ -345,6 +353,8 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* shs,
 	const float* colors_precomp,
 	const float* scales,
+	const float* skews,
+	const float* skew_sensitivity,
 	const float scale_modifier,
 	const float* rotations,
 	const float* cov3D_precomp,
@@ -365,6 +375,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dcov3D,
 	float* dL_dsh,
 	float* dL_dscale,
+	float* dL_dskews,
+	float* dL_dskew_sensitivity,
 	float* dL_drot,
 	bool debug)
 {
@@ -387,6 +399,11 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+
+	float2* dL_dskews2D;
+	cudaMalloc(&dL_dskews2D, P * sizeof(float2));
+	cudaMemset(dL_dskews2D, 0, P * sizeof(float2));
+
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,
@@ -395,6 +412,8 @@ void CudaRasterizer::Rasterizer::backward(
 		width, height,
 		background,
 		geomState.means2D,
+		geomState.skews2D,
+		skew_sensitivity,
 		geomState.conic_opacity,
 		color_ptr,
 		imgState.accum_alpha,
@@ -402,6 +421,8 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dpix,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
+		dL_dskews2D,
+		dL_dskew_sensitivity,
 		dL_dopacity,
 		dL_dcolor), debug)
 
@@ -415,6 +436,8 @@ void CudaRasterizer::Rasterizer::backward(
 		shs,
 		geomState.clamped,
 		(glm::vec3*)scales,
+		(glm::vec3*)skews,
+		skew_sensitivity,
 		(glm::vec4*)rotations,
 		scale_modifier,
 		cov3D_ptr,
@@ -428,6 +451,9 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
+		dL_dskews2D,
+		dL_dskews,
+		dL_dskew_sensitivity,
 		dL_dsh,
 		(glm::vec3*)dL_dscale,
 		(glm::vec4*)dL_drot), debug)

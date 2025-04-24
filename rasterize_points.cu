@@ -39,6 +39,8 @@ RasterizeGaussiansCUDA(
     const torch::Tensor& colors,
     const torch::Tensor& opacity,
 	const torch::Tensor& scales,
+	const torch::Tensor& skews,
+	const torch::Tensor& skew_sensitivity,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
 	const torch::Tensor& cov3D_precomp,
@@ -98,6 +100,8 @@ RasterizeGaussiansCUDA(
 		colors.contiguous().data<float>(), 
 		opacity.contiguous().data<float>(), 
 		scales.contiguous().data_ptr<float>(),
+		skews.contiguous().data_ptr<float>(),
+		skew_sensitivity.contiguous().data_ptr<float>(),
 		scale_modifier,
 		rotations.contiguous().data_ptr<float>(),
 		cov3D_precomp.contiguous().data<float>(), 
@@ -114,13 +118,15 @@ RasterizeGaussiansCUDA(
   return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer, imgBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
 	const torch::Tensor& radii,
     const torch::Tensor& colors,
 	const torch::Tensor& scales,
+	const torch::Tensor& skews,
+	const torch::Tensor& skew_sensitivity,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
 	const torch::Tensor& cov3D_precomp,
@@ -156,8 +162,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dcov3D = torch::zeros({P, 6}, means3D.options());
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
+  torch::Tensor dL_dskews = torch::zeros({P, 3}, means3D.options());
+  torch::Tensor dL_dskew_sensitivity = torch::zeros({P, 1}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
-  
+
   if(P != 0)
   {  
 	  CudaRasterizer::Rasterizer::backward(P, degree, M, R,
@@ -167,6 +175,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  sh.contiguous().data<float>(),
 	  colors.contiguous().data<float>(),
 	  scales.data_ptr<float>(),
+	  skews.data_ptr<float>(),
+	  skew_sensitivity.data_ptr<float>(),
 	  scale_modifier,
 	  rotations.data_ptr<float>(),
 	  cov3D_precomp.contiguous().data<float>(),
@@ -188,11 +198,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dcov3D.contiguous().data<float>(),
 	  dL_dsh.contiguous().data<float>(),
 	  dL_dscales.contiguous().data<float>(),
+	  dL_dskews.contiguous().data<float>(),
+	  dL_dskew_sensitivity.contiguous().data<float>(),
 	  dL_drotations.contiguous().data<float>(),
 	  debug);
   }
-
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_drotations);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_dskews, dL_dskew_sensitivity, dL_drotations);
 }
 
 torch::Tensor markVisible(

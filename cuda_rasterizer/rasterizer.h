@@ -40,6 +40,8 @@ namespace CudaRasterizer
 			const float* colors_precomp,
 			const float* opacities,
 			const float* scales,
+			const float* skews,	
+			const float* skew_sensitivity,
 			const float scale_modifier,
 			const float* rotations,
 			const float* cov3D_precomp,
@@ -60,6 +62,8 @@ namespace CudaRasterizer
 			const float* shs,
 			const float* colors_precomp,
 			const float* scales,
+			const float* skews,
+			const float* skew_sensitivity,
 			const float scale_modifier,
 			const float* rotations,
 			const float* cov3D_precomp,
@@ -80,6 +84,8 @@ namespace CudaRasterizer
 			float* dL_dcov3D,
 			float* dL_dsh,
 			float* dL_dscale,
+			float* dL_dskews,
+			float* dL_dskew_sensitivity,
 			float* dL_drot,
 			bool debug);
 	};
