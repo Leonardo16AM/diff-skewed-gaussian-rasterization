@@ -384,7 +384,8 @@ __global__ void preprocessCUDA(
     dL_dmean.x = (projmatrix[0]*m_w - projmatrix[3]*mul1) * dL_dmean2D[idx].x + (projmatrix[1]*m_w - projmatrix[3]*mul2) * dL_dmean2D[idx].y;
     dL_dmean.y = (projmatrix[4]*m_w - projmatrix[7]*mul1) * dL_dmean2D[idx].x + (projmatrix[5]*m_w - projmatrix[7]*mul2) * dL_dmean2D[idx].y;
     dL_dmean.z = (projmatrix[8]*m_w - projmatrix[11]*mul1) * dL_dmean2D[idx].x + (projmatrix[9]*m_w - projmatrix[11]*mul2) * dL_dmean2D[idx].y;
-    
+    dL_dmean = -dL_dmean;
+	
 	float3 tmp = dL_dmeans3D[idx];
 	float3 delta = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
 	tmp.x += delta.x;
