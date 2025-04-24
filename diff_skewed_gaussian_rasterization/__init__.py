@@ -150,7 +150,10 @@ class _RasterizeGaussians(torch.autograd.Function):
         else:
              grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_skews, grad_skew_sensitivity,grad_rotations = _C.rasterize_gaussians_backward(*args)
 
-        grads = (
+        if grad_skew_sensitivity is not None:
+            grad_skew_sensitivity = grad_skew_sensitivity.squeeze(-1)
+
+        raw_grads = (
             grad_means3D,
             grad_means2D,
             grad_sh,
@@ -161,9 +164,13 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_skew_sensitivity,
             grad_rotations,
             grad_cov3Ds_precomp,
-            None,
+            None,                  # raster_settings (not a Tensor)
         )
 
+        grads = tuple(
+            g if need else None
+            for g, need in zip(raw_grads, ctx.needs_input_grad)
+        )
         return grads
 
 class GaussianRasterizationSettings(NamedTuple):

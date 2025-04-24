@@ -76,21 +76,21 @@ def rotation_matrix_from_euler(x, y, z):
         [1, 0, 0],
         [0, torch.cos(x), -torch.sin(x)],
         [0, torch.sin(x), torch.cos(x)]
-    ], dtype=torch.float32)
+    ], dtype=torch.float32, requires_grad=True)
     
     # Rotación en Y
     Ry = torch.tensor([
         [torch.cos(y), 0, torch.sin(y)],
         [0, 1, 0],
         [-torch.sin(y), 0, torch.cos(y)]
-    ], dtype=torch.float32)
+    ], dtype=torch.float32, requires_grad=True)
     
     # Rotación en Z
     Rz = torch.tensor([
         [torch.cos(z), -torch.sin(z), 0],
         [torch.sin(z), torch.cos(z), 0],
         [0, 0, 1]
-    ], dtype=torch.float32)
+    ], dtype=torch.float32, requires_grad=True)
     
     # Orden de aplicación: primero Z, luego Y, finalmente X
     R = Rx @ Ry @ Rz
@@ -102,6 +102,19 @@ class GaussianViewer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+        self.gaussian_pos       = torch.nn.Parameter(torch.tensor(
+            [[-1., -1., 5.],
+             [ 1., -1., 5.],
+             [ 1.,  1., 5.],
+             [-1.,  1., 5.]], device=self.device))
+        self.gaussian_scale     = torch.nn.Parameter(torch.full((4,3), 0.25, device=self.device))
+        self.gaussian_skew      = torch.nn.Parameter(torch.zeros((4,3), device=self.device))
+        self.skew_sensitivity   = torch.nn.Parameter(torch.full((4,), 1000.0, device=self.device))
+        self.colors             = torch.nn.Parameter(torch.tensor([[1,0,0],[0,1,0],[0,0,1],[1,1,0]], dtype=torch.float32, device=self.device))
+        self.opacities          = torch.nn.Parameter(torch.ones((4,1), device=self.device))
+        self.rotations          = torch.nn.Parameter(torch.zeros((4,4), device=self.device))
+        
 
         # Cámara
         self.cam_yaw = self.cam_pitch = 0.0
@@ -116,25 +129,6 @@ class GaussianViewer(QMainWindow):
         self.rotation_angle = 0.0
         self.center_point = torch.tensor([0., 0., 5.], device=self.device)  # Centro de las gaussianas
 
-        # 4 gaussianas – posiciones, escalas, skew
-        self.gaussian_pos = torch.tensor(
-            [[-1., -1., 5.],
-             [ 1., -1., 5.],
-             [ 1.,  1., 5.],
-             [-1.,  1., 5.]], device=self.device)                          # (4,3)
-
-        self.gaussian_scale = torch.full((4, 3), 0.25, device=self.device)   # (4,3)
-        self.gaussian_skew  = torch.zeros((4, 3), device=self.device)        # (4,3)
-        self.skew_sensitivity = torch.full((4,), 1000.0, device=self.device) # (4,)
-
-        self.colors = torch.tensor([[1,0,0],[0,1,0],[0,0,1],[1,1,0]],
-                                   dtype=torch.float32, device=self.device)
-        self.opacities = torch.ones((4,1), device=self.device)
-        
-        # Inicializar rotaciones (quaterniones para 3D GS)
-        self.rotations = torch.zeros((4,4), device=self.device)
-        self.rotations[:,3] = 1.0  # Componente W del quaternion = 1 (sin rotación)
-        
         # Ángulos de Euler para la gaussiana 0 (en radianes)
         self.euler_angles = torch.zeros(3, device=self.device)
 
@@ -493,11 +487,29 @@ class GaussianViewer(QMainWindow):
             scales=self.gaussian_scale, rotations=self.rotations,
             skews=self.gaussian_skew, skew_sensitivity=self.skew_sensitivity)
         
+        loss = rendered.sum()
+        loss.backward()
+
+        # Forzar sincronización para asegurarte de que todos los printf de CUDA aparezcan
+        torch.cuda.synchronize()
+
+        # Imprimir gradientes
+        print("_____________________________________________________________")
+        print("Gradiente de means3D:", self.gaussian_pos.grad)
+        print("Gradiente de opacities:", self.opacities.grad)
+        print("Gradiente de scales:",   self.gaussian_scale.grad)
+        print("Gradiente de rotations:",   self.rotations.grad)
+        print("Gradiente de skews:",    self.gaussian_skew.grad)
+        print("Gradiente de skew_sens:",    self.skew_sensitivity.grad)
 
         img=(rendered.detach().cpu().numpy().transpose(1,2,0)*255).astype(np.uint8)
         h,w,_=img.shape
         self.render_view.setPixmap(QPixmap.fromImage(
             QImage(img.tobytes(),w,h,3*w,QImage.Format_RGB888)))
+        for param in [self.gaussian_pos, self.opacities, self.gaussian_scale, self.rotations, self.gaussian_skew, self.skew_sensitivity]:
+            if param.grad is not None:
+                param.grad.zero_()
+
 
 
 # ──────────────────────────────── MAIN ───────────────────────────────────────
