@@ -51,6 +51,8 @@ namespace CudaRasterizer
 			const float tan_fovx, float tan_fovy,
 			const bool prefiltered,
 			float* out_color,
+			float* depth,
+			bool antialiasing,
 			int* radii = nullptr,
 			bool debug = false);
 
@@ -61,6 +63,7 @@ namespace CudaRasterizer
 			const float* means3D,
 			const float* shs,
 			const float* colors_precomp,
+			const float* opacities,
 			const float* scales,
 			const float* skews,
 			const float* skew_sensitivity,
@@ -76,10 +79,12 @@ namespace CudaRasterizer
 			char* binning_buffer,
 			char* image_buffer,
 			const float* dL_dpix,
+			const float* dL_invdepths,
 			float* dL_dmean2D,
 			float* dL_dconic,
 			float* dL_dopacity,
 			float* dL_dcolor,
+			float* dL_dinvdepth,
 			float* dL_dmean3D,
 			float* dL_dcov3D,
 			float* dL_dsh,
@@ -87,6 +92,7 @@ namespace CudaRasterizer
 			float* dL_dskews,
 			float* dL_dskew_sensitivity,
 			float* dL_drot,
+			bool antialiasing,
 			bool debug);
 	};
 };

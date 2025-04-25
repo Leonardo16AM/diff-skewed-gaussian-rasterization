@@ -31,15 +31,18 @@ namespace BACKWARD
 		const float* skew_sensitivity,
 		const float4* conic_opacity,
 		const float* colors,
+		const float* depths,
 		const float* final_Ts,
 		const uint32_t* n_contrib,
 		const float* dL_dpixels,
+		const float* dL_invdepths,
 		float3* dL_dmean2D,
 		float4* dL_dconic2D,
 		float2* dL_dskews2D,
 		float* dL_dskew_sensitivity,
 		float* dL_dopacity,
-		float* dL_dcolors);
+		float* dL_dcolors,
+		float* dL_dinvdepths);
 
 	void preprocess(
 		int P, int D, int M,
@@ -47,6 +50,7 @@ namespace BACKWARD
 		const int* radii,
 		const float* shs,
 		const bool* clamped,
+		const float* opacities,
 		const glm::vec3* scales,
 		const glm::vec3* skews,
 		const float* skew_sensitivity,
@@ -60,6 +64,8 @@ namespace BACKWARD
 		const glm::vec3* campos,
 		const float3* dL_dmean2D,
 		const float* dL_dconic2D,
+		const float* dL_dinvdepth,
+		float* dL_dopacity,
 		glm::vec3* dL_dmean3D,
 		float* dL_dcolor,
 		float* dL_dcov3D,
@@ -68,7 +74,8 @@ namespace BACKWARD
 		float* dL_dskew_sensitivity,
 		float* dL_dsh,
 		glm::vec3* dL_dscale,
-		glm::vec4* dL_drot);
+		glm::vec4* dL_drot,
+		bool antialiasing);
 }
 
 #endif
