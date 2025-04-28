@@ -686,6 +686,13 @@ renderCUDA(
     }
 }
 
+#define CUDA_CHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char* file, int line)
+{
+    if (code != cudaSuccess)
+        printf("CUDA-ERROR %s %s:%d\n", cudaGetErrorString(code), file, line);
+}
+
 void BACKWARD::preprocess(
 	int P, int D, int M,
 	const float3* means3D,
@@ -773,6 +780,8 @@ void BACKWARD::preprocess(
 		dL_dscale,
 		dL_drot,
 		dL_dopacity);
+		//CUDA_CHECK( cudaGetLastError() );
+		//CUDA_CHECK( cudaDeviceSynchronize() );
 }
 
 void BACKWARD::render(
@@ -822,4 +831,6 @@ void BACKWARD::render(
 		dL_dcolors,
 		dL_dinvdepths
 		);
+		//CUDA_CHECK( cudaGetLastError() );
+		//CUDA_CHECK( cudaDeviceSynchronize() );
 }

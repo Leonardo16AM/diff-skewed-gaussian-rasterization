@@ -197,9 +197,6 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	
-	//<<<<<<<<<<<<<<<<Changed from orighinal>>>>>>>>>>>>>>>>>>>>
-	p_hom = transformPoint4x4({p_view.x, p_view.y, p_view.z}, projmatrix);
-	
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -453,6 +450,13 @@ renderCUDA(
 	}
 }
 
+#define CUDA_CHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char* file, int line)
+{
+    if (code != cudaSuccess)
+        printf("CUDA-ERROR %s %s:%d\n", cudaGetErrorString(code), file, line);
+}
+
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
@@ -485,6 +489,8 @@ void FORWARD::render(
 		out_color,
 		depths, 
 		depth);
+		//CUDA_CHECK( cudaGetLastError() );
+		//CUDA_CHECK( cudaDeviceSynchronize() );
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -548,4 +554,6 @@ void FORWARD::preprocess(int P, int D, int M,
 		prefiltered,
 		antialiasing
 		);
+		CUDA_CHECK( cudaGetLastError() );
+		CUDA_CHECK( cudaDeviceSynchronize() );
 }
