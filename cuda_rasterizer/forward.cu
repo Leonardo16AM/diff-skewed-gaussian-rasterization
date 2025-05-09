@@ -259,15 +259,14 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		viewmatrix[2] * skew_w.x + viewmatrix[6] * skew_w.y + viewmatrix[10] * skew_w.z
 	};
 
-	// Apply skew in camera space
-	float3 p_skew_view = {
-		p_view.x + skew_cam.x,
-		p_view.y + skew_cam.y,
-		p_view.z + skew_cam.z
+	float3 p_skew_world = {
+		p_orig.x + skew_w.x,
+		p_orig.y + skew_w.y,
+		p_orig.z + skew_w.z
 	};
-
-	// Project skewed point with same projection matrix
-	float4 p_skew_h = transformPoint4x4(p_skew_view, projmatrix);
+	
+	float4 p_skew_h = transformPoint4x4(p_skew_world, projmatrix);
+	
 	float inv_w_skew = 1.f / (p_skew_h.w + 1e-7f);
 	float2 p_skew_pix = {
 		ndc2Pix(p_skew_h.x * inv_w_skew, W),
@@ -408,7 +407,7 @@ renderCUDA(
             float powerB = -0.5f * (con_o.x * dB.x*dB.x
                                     + con_o.z * dB.y*dB.y)
                            - con_o.y * dB.x * dB.y;
-            float B = con_o.w * expf(powerB);
+			float B = con_o.w * expf(powerB);
 
             // --- apply the skew‐mask: A * (1 – exp(–100 * B)) ---
             float mask      = 1.0f - expf(-skew_sensitivity[id] * B);

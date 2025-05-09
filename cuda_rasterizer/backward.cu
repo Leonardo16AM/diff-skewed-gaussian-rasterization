@@ -446,22 +446,21 @@ __global__ void preprocessCUDA(
 	tmp.z += delta.z;
 	dL_dmeans3D[idx] = tmp;
 
-    if (dL_dskews2D && dL_dskews) {
-        float gradx = dL_dskews2D[idx].x;
-        float grady = dL_dskews2D[idx].y;
+    if (dL_dskews2D && dL_dskews)
+    {
+        const float gradx = dL_dskews2D[idx].x;   // ∂L/∂sx_pix
+        const float grady = dL_dskews2D[idx].y;   // ∂L/∂sy_pix
 
-        glm::vec3 dL_dskew_cam;
-        dL_dskew_cam.x = (projmatrix[0]*m_w - projmatrix[3]*mul1) * gradx + (projmatrix[1]*m_w - projmatrix[3]*mul2) * grady;
-        dL_dskew_cam.y = (projmatrix[4]*m_w - projmatrix[7]*mul1) * gradx + (projmatrix[5]*m_w - projmatrix[7]*mul2) * grady;
-        dL_dskew_cam.z = (projmatrix[8]*m_w - projmatrix[11]*mul1)* gradx + (projmatrix[9]*m_w - projmatrix[11]*mul2)* grady;
+        glm::vec3 dL_dskew_world;
+        dL_dskew_world.x = (projmatrix[0] * m_w - projmatrix[3] * mul1) * gradx +
+                           (projmatrix[1] * m_w - projmatrix[3] * mul2) * grady;
+        dL_dskew_world.y = (projmatrix[4] * m_w - projmatrix[7] * mul1) * gradx +
+                           (projmatrix[5] * m_w - projmatrix[7] * mul2) * grady;
+        dL_dskew_world.z = (projmatrix[8] * m_w - projmatrix[11]* mul1) * gradx +
+                           (projmatrix[9] * m_w - projmatrix[11]* mul2) * grady;
 
-        float3 dL_dskew_world = {
-			viewmatrix[0]*dL_dskew_cam.x + viewmatrix[1]*dL_dskew_cam.y + viewmatrix[2]*dL_dskew_cam.z,
-			viewmatrix[4]*dL_dskew_cam.x + viewmatrix[5]*dL_dskew_cam.y + viewmatrix[6]*dL_dskew_cam.z,
-			viewmatrix[8]*dL_dskew_cam.x + viewmatrix[9]*dL_dskew_cam.y + viewmatrix[10]*dL_dskew_cam.z };
-		
-
-		auto* dL_dskews_f3 = reinterpret_cast<float3*>(dL_dskews);
+        // Acumular atómicamente en el buffer de gradientes de skew (float3*)
+        auto* dL_dskews_f3 = reinterpret_cast<float3*>(dL_dskews);
         atomicAdd(&dL_dskews_f3[idx].x, dL_dskew_world.x);
         atomicAdd(&dL_dskews_f3[idx].y, dL_dskew_world.y);
         atomicAdd(&dL_dskews_f3[idx].z, dL_dskew_world.z);

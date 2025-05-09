@@ -473,5 +473,5 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)dL_dscale,
 		(glm::vec4*)dL_drot,
 		antialiasing), debug);
-	//CHECK_CUDA(cudaFree(dL_dskews2D), debug);
+	CHECK_CUDA(cudaFree(dL_dskews2D), debug);
 }
