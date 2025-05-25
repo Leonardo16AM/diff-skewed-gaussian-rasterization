@@ -105,10 +105,6 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
-	// Apply low-pass filter: every Gaussian should be at least
-	// one pixel wide/high. Discard 3rd row and column.
-	cov[0][0] += 0.3f;
-	cov[1][1] += 0.3f;
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
@@ -180,7 +176,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	bool antialiasing)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -200,9 +197,6 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	
-	//<<<<<<<<<<<<<<<<Changed from orighinal>>>>>>>>>>>>>>>>>>>>
-	p_hom = transformPoint4x4({p_view.x, p_view.y, p_view.z}, projmatrix);
-	
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -221,9 +215,19 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+	
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
+
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
 
 	// Invert covariance (EWA algorithm)
-	float det = (cov.x * cov.z - cov.y * cov.y);
+	const float det = det_cov_plus_h_cov;
 	if (det == 0.0f)
 		return;
 	float det_inv = 1.f / det;
@@ -241,29 +245,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
 			
-	// Convert skews[idx] (glm::vec3) to float3
-	float3 skew_w = {
-		skews[idx].x,
-		skews[idx].y,
-		skews[idx].z
-	};
 
-	// Transform skew vector to camera space (rotation only, no translation)
-	float3 skew_cam = {
-		viewmatrix[0] * skew_w.x + viewmatrix[4] * skew_w.y + viewmatrix[8]  * skew_w.z,
-		viewmatrix[1] * skew_w.x + viewmatrix[5] * skew_w.y + viewmatrix[9]  * skew_w.z,
-		viewmatrix[2] * skew_w.x + viewmatrix[6] * skew_w.y + viewmatrix[10] * skew_w.z
+	float3 p_skew_world = {
+		p_orig.x + skews[idx].x,
+		p_orig.y + skews[idx].y,
+		p_orig.z + skews[idx].z
 	};
-
-	// Apply skew in camera space
-	float3 p_skew_view = {
-		p_view.x + skew_cam.x,
-		p_view.y + skew_cam.y,
-		p_view.z + skew_cam.z
-	};
-
-	// Project skewed point with same projection matrix
-	float4 p_skew_h = transformPoint4x4(p_skew_view, projmatrix);
+	
+	float4 p_skew_h = transformPoint4x4(p_skew_world, projmatrix);
+	
 	float inv_w_skew = 1.f / (p_skew_h.w + 1e-7f);
 	float2 p_skew_pix = {
 		ndc2Pix(p_skew_h.x * inv_w_skew, W),
@@ -294,7 +284,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	float opacity = opacities[idx];
+	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
+
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -315,7 +307,9 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	const float* __restrict__ depths,
+	float* __restrict__ invdepth)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -346,6 +340,8 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+
+	float expected_invdepth = 0.0f;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -392,21 +388,17 @@ renderCUDA(
             float sx = skews2D[id].x;
 			float sy = skews2D[id].y;
 
-            
-			
             float2 dB    = { d.x - sx, d.y - sy };
             float powerB = -0.5f * (con_o.x * dB.x*dB.x
                                     + con_o.z * dB.y*dB.y)
                            - con_o.y * dB.x * dB.y;
-            float B = con_o.w * expf(powerB);
+			float B = expf(powerB);
 
-            // --- apply the skew‐mask: A * (1 – exp(–100 * B)) ---
+            // --- apply the skew‐mask: A * (1 – exp(–S * B)) ---
             float mask      = 1.0f - expf(-skew_sensitivity[id] * B);
-            float alpha_raw = min(0.99f, A);
-            float alpha     = alpha_raw * mask;
+            float alpha = min(0.99f, A*mask);
 
-			//printf("Gaussian ID: %d, sx: %.6f, sy: %.6f\n A: %.6f, B: %.6f, mask: %.6f, alpha: %.6f\n", id, sx, sy, A, B, mask, alpha);
-            if (alpha < 1.0f / 255.0f)
+			if (alpha < 1.0f / 255.0f)
                 continue;
 
             // front‐to‐back compositing
@@ -418,6 +410,9 @@ renderCUDA(
             }
             for (int ch = 0; ch < CHANNELS; ch++)
                 C[ch] += features[id * CHANNELS + ch] * alpha * T;
+			if(invdepth)
+				expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+	
             T = test_T;
             last_contributor = contributor;
         }
@@ -431,6 +426,9 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+
+		if (invdepth)
+			invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
 	}
 }
 
@@ -447,7 +445,9 @@ void FORWARD::render(
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
-	float* out_color)
+	float* out_color,
+	float* depths,
+	float* depth)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -461,7 +461,9 @@ void FORWARD::render(
 		final_T,
 		n_contrib,
 		bg_color,
-		out_color);
+		out_color,
+		depths, 
+		depth);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -491,7 +493,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	bool antialiasing)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -521,6 +524,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		conic_opacity,
 		grid,
 		tiles_touched,
-		prefiltered
+		prefiltered,
+		antialiasing
 		);
 }
