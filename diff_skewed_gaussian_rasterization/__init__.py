@@ -134,9 +134,6 @@ class _RasterizeGaussians(torch.autograd.Function):
         # Compute gradients for relevant tensors by invoking backward method
         grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_skews, grad_skew_sensitivity, grad_rotations = _C.rasterize_gaussians_backward(*args)    
         
-        #if grad_skew_sensitivity is not None:
-        #    grad_skew_sensitivity = grad_skew_sensitivity.squeeze(-1)
-
         raw_grads = (
             grad_means3D,
             grad_means2D,
@@ -169,8 +166,8 @@ class GaussianRasterizationSettings(NamedTuple):
     sh_degree : int
     campos : torch.Tensor
     prefiltered : bool
-    antialiasing : bool
     debug : bool
+    antialiasing : bool
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

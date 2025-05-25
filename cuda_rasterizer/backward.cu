@@ -411,7 +411,6 @@ __global__ void preprocessCUDA(
     const float tan_fovx, const float tan_fovy,
     const glm::vec3* campos,
     const float3* dL_dmean2D,
-    const float4* dL_dconic2D,
     float3* dL_dmeans3D,
     float* dL_dcolor,
     float* dL_dcov3D,
@@ -437,8 +436,7 @@ __global__ void preprocessCUDA(
     dL_dmean.x = (projmatrix[0]*m_w - projmatrix[3]*mul1) * dL_dmean2D[idx].x + (projmatrix[1]*m_w - projmatrix[3]*mul2) * dL_dmean2D[idx].y;
     dL_dmean.y = (projmatrix[4]*m_w - projmatrix[7]*mul1) * dL_dmean2D[idx].x + (projmatrix[5]*m_w - projmatrix[7]*mul2) * dL_dmean2D[idx].y;
     dL_dmean.z = (projmatrix[8]*m_w - projmatrix[11]*mul1) * dL_dmean2D[idx].x + (projmatrix[9]*m_w - projmatrix[11]*mul2) * dL_dmean2D[idx].y;
-    dL_dmean = -dL_dmean;
-	
+
 	float3 tmp = dL_dmeans3D[idx];
 	float3 delta = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
 	tmp.x += delta.x;
@@ -448,23 +446,32 @@ __global__ void preprocessCUDA(
 
     if (dL_dskews2D && dL_dskews)
     {
-        const float gradx = dL_dskews2D[idx].x;   // ∂L/∂sx_pix
-        const float grady = dL_dskews2D[idx].y;   // ∂L/∂sy_pix
+		glm::vec3 m_glm = glm::vec3(m.x, m.y, m.z);
+		glm::vec3 m_skew = m_glm + skews[idx];
+		float3 m_skew_f3 = make_float3(m_skew.x, m_skew.y, m_skew.z);
+		float4 m_skew_h = transformPoint4x4(m_skew_f3, projmatrix);
+		float m_skew_w  = 1.f / (m_skew_h.w + 1e-7f);
 
-        glm::vec3 dL_dskew_world;
-        dL_dskew_world.x = (projmatrix[0] * m_w - projmatrix[3] * mul1) * gradx +
-                           (projmatrix[1] * m_w - projmatrix[3] * mul2) * grady;
-        dL_dskew_world.y = (projmatrix[4] * m_w - projmatrix[7] * mul1) * gradx +
-                           (projmatrix[5] * m_w - projmatrix[7] * mul2) * grady;
-        dL_dskew_world.z = (projmatrix[8] * m_w - projmatrix[11]* mul1) * gradx +
-                           (projmatrix[9] * m_w - projmatrix[11]* mul2) * grady;
+		float mul1 = (projmatrix[0]*m_skew.x + projmatrix[4]*m_skew.y +
+					projmatrix[8]*m_skew.z + projmatrix[12]) * m_skew_w * m_skew_w;
+		float mul2 = (projmatrix[1]*m_skew.x + projmatrix[5]*m_skew.y +
+					projmatrix[9]*m_skew.z + projmatrix[13]) * m_skew_w * m_skew_w;
 
-        // Acumular atómicamente en el buffer de gradientes de skew (float3*)
-        auto* dL_dskews_f3 = reinterpret_cast<float3*>(dL_dskews);
-        atomicAdd(&dL_dskews_f3[idx].x, dL_dskew_world.x);
-        atomicAdd(&dL_dskews_f3[idx].y, dL_dskew_world.y);
-        atomicAdd(&dL_dskews_f3[idx].z, dL_dskew_world.z);
+		float gradx = dL_dskews2D[idx].x;
+		float grady = dL_dskews2D[idx].y;
+		glm::vec3 dL_dskew_world;
+		dL_dskew_world.x = (projmatrix[0]*m_skew_w - projmatrix[3]*mul1) * gradx +
+						(projmatrix[1]*m_skew_w - projmatrix[3]*mul2) * grady;
+		dL_dskew_world.y = (projmatrix[4]*m_skew_w - projmatrix[7]*mul1) * gradx +
+						(projmatrix[5]*m_skew_w - projmatrix[7]*mul2) * grady;
+		dL_dskew_world.z = (projmatrix[8]*m_skew_w - projmatrix[11]*mul1) * gradx +
+						(projmatrix[9]*m_skew_w - projmatrix[11]*mul2) * grady;
+
+        atomicAdd(dL_dskews + 3*idx + 0, dL_dskew_world.x);
+		atomicAdd(dL_dskews + 3*idx + 1, dL_dskew_world.y);
+		atomicAdd(dL_dskews + 3*idx + 2, dL_dskew_world.z);
     }
+	
 
     if (shs) computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped,
                                  (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans3D, (glm::vec3*)dL_dsh);
@@ -485,11 +492,11 @@ renderCUDA(
     const float*   __restrict__ skew_sensitivity,
     const float4*  __restrict__ conic_opacity,
     const float*   __restrict__ colors,
-	const float* 				depths,
+	const float*   __restrict__ depths,
     const float*   __restrict__ final_Ts,
     const uint32_t*__restrict__ n_contrib,
     const float*   __restrict__ dL_dpixels,
-	const float* 				dL_invdepths,
+	const float*   __restrict__ dL_invdepths,
           float3*  __restrict__ dL_dmean2D,
           float4*  __restrict__ dL_dconic2D,
           float2*  __restrict__ dL_dskews2D,
@@ -521,13 +528,9 @@ renderCUDA(
     __shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_depths[BLOCK_SIZE];
 
-    // En el forward, almacenamos el valor final para T,
-    // el producto de todos los factores (1 - alpha).
     const float T_final = inside ? final_Ts[pix_id] : 0;
     float T = T_final;
 
-    // Comenzamos desde atrás. El ID de la última Gaussiana contribuyente
-    // es conocido desde cada píxel en el forward.
     uint32_t contributor = toDo;
     const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
@@ -546,16 +549,12 @@ renderCUDA(
     float last_alpha = 0;
     float last_color[C] = { 0 };
 	float last_invdepth = 0;
-    // Gradiente de coordenada de píxel con respecto a 
-    // coordenadas de viewport normalizadas (-1 a 1)
+
     const float ddelx_dx = 0.5f * W;
     const float ddely_dy = 0.5f * H;
 
-    // Recorrer todas las Gaussianas
     for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
     {
-        // Cargar datos auxiliares en memoria compartida, comenzando desde ATRÁS
-        // y cargándolos en orden inverso.
         block.sync();
         const int progress = i * BLOCK_SIZE + block.thread_rank();
         if (range.x + progress < range.y)
@@ -572,56 +571,46 @@ renderCUDA(
         }
         block.sync();
 
-        // Iterar sobre Gaussianas
         for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
         {
-            // Seguir la pista del ID de la Gaussiana actual. Omitir, si ésta
-            // está detrás del último contribuyente para este píxel.
             contributor--;
             if (contributor >= last_contributor)
                 continue;
 
-            // Calcular valores de mezcla, como antes.
             const float2 xy = collected_xy[j];
             const float2 d  = { xy.x - pixf.x, xy.y - pixf.y };
-            const float4 C4 = collected_conic_opacity[j];
+            const float4 con_o = collected_conic_opacity[j];
 
-            const float G  = __expf(-0.5f*(C4.x*d.x*d.x + C4.z*d.y*d.y) - C4.y*d.x*d.y);
-            const float A_raw = C4.w * G;
-            const float A     = fminf(0.99f, A_raw);
-            const bool  h     = (A_raw <= 0.99f);
-
+            const float G  = __expf(-0.5f*(con_o.x*d.x*d.x + con_o.z*d.y*d.y) - con_o.y*d.x*d.y);
+            const float A = con_o.w * G;
             const uint  gid   = collected_id[j];
             const float2 s2D  = skews2D[gid];
             const float2 dB   = { d.x - s2D.x, d.y - s2D.y };
-            const float  B    = C4.w * __expf(-0.5f*(C4.x*dB.x*dB.x + C4.z*dB.y*dB.y) - C4.y*dB.x*dB.y);
+            const float  B    = __expf(-0.5f*(con_o.x*dB.x*dB.x + con_o.z*dB.y*dB.y) - con_o.y*dB.x*dB.y);
 
             const float  S    = skew_sensitivity[gid];
             const float  mask = 1.f - __expf(-S * B);
-            const float  alpha= A * mask;
+            const float  alpha= fminf(0.99f, A * mask);
+
             if (alpha < 1.f/255.f) continue;
 
             /* ---------- compositing ---------- */
             T = T / (1.f - alpha);
-
-            /* ---------- dL/dα acumulado ---------- */
-            float dL_dalpha = 0.f;
-			const uint global_id = collected_id[j];
 			const float dchannel_dcolor = alpha * T;
-            for (int ch = 0; ch < C; ++ch) 
-            {
-                const float c = collected_colors[ch * BLOCK_SIZE + j];
-                // Actualizar último color (a usar en la próxima iteración)
-                accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
-                last_color[ch] = c;
 
-                const float dL_dchannel = dL_dpixel[ch];
-                dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
-                // Actualizar los gradientes con respecto al color de la Gaussiana.
-                // Atómico, ya que este píxel es solo uno de potencialmente
-                // muchos que fueron afectados por esta Gaussiana.
-                atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
-            }
+
+			float dL_dalpha = 0.0f;
+			const int global_id = collected_id[j];
+			for (int ch = 0; ch < C; ch++)
+			{
+				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+				last_color[ch] = c;
+
+				const float dL_dchannel = dL_dpixel[ch];
+				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+			}
 			if (dL_dinvdepths)
 			{
 				const float invd = 1.f / collected_depths[j];
@@ -631,18 +620,19 @@ renderCUDA(
 				atomicAdd(&(dL_dinvdepths[global_id]), dchannel_dcolor * dL_invdepth);
 			}
             dL_dalpha *= T;
+
+			last_alpha = alpha;
             
-            // Tener en cuenta que alpha también influye en cuánto del
-            // color de fondo se agrega si no queda nada para mezclar
             float bg_dot_dpixel = 0;
             for (int i = 0; i < C; i++)
                 bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
             dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
             
-             /* ===== DERIVADAS ANALÍTICAS ===== */
-			 const float dalpha_dA = h ? mask : 0.f;        // h·m
-			 const float dalpha_dB = A * S * (1.f - mask);  // A S (1-m)
-			 const float dalpha_dS = A * B * (1.f - mask);  // A B (1-m)
+			 float dalpha_dA  = mask;
+
+			 const float exp_term = __expf(-S * B);
+			 const float dalpha_dB = A * S * exp_term;
+			 const float dalpha_dS = A * B * exp_term;
  
 			 // -- sensitividad S
 			 atomicAdd(&dL_dskew_sensitivity[gid], dL_dalpha * dalpha_dS);
@@ -650,46 +640,49 @@ renderCUDA(
 			 // -- conic (cxx,cxy,cyy)  [-½ A (…) ]
 			 const float3 qA = { d.x*d.x,      2.f*d.x*d.y,      d.y*d.y };
 			 const float3 qB = { dB.x*dB.x,    2.f*dB.x*dB.y,    dB.y*dB.y };
-			 const float common = -0.5f * dL_dalpha * A;
- 
-			 atomicAdd(&dL_dconic2D[gid].x, common * (dalpha_dA * qA.x + dalpha_dB * qB.x));
-			 atomicAdd(&dL_dconic2D[gid].y, common * (dalpha_dA * qA.y + dalpha_dB * qB.y));
-			 atomicAdd(&dL_dconic2D[gid].w, common * (dalpha_dA * qA.z + dalpha_dB * qB.z));
- 
-			 // -- opacidad base o
-			 float dL_do = dL_dalpha * ( h ? (dalpha_dA * G) : 0.f
-                            +  dalpha_dB * (B / C4.w) );
-			 atomicAdd(&dL_dopacity[gid], dL_do);
+			 const float neg_half_dL = -0.5f * dL_dalpha;
 
-			
+			 atomicAdd(&dL_dconic2D[gid].x,
+					   neg_half_dL * (dalpha_dA * A * qA.x +
+									   dalpha_dB * B * qB.x));
+			 atomicAdd(&dL_dconic2D[gid].y,
+					   neg_half_dL * (dalpha_dA * A * qA.y +
+									   dalpha_dB * B * qB.y));
+
+			 atomicAdd(&dL_dconic2D[gid].w,
+			           neg_half_dL * (dalpha_dA * A * qA.z +
+			                          dalpha_dB * B * qB.z));
+ 
 			 // -- skew-pix
-			 const float2 C_dB = { C4.x*dB.x + C4.y*dB.y,
-								   C4.y*dB.x + C4.z*dB.y };
+			 const float2 C_dB = { -(con_o.x*dB.x + con_o.y*dB.y),
+								   -(con_o.y*dB.x + con_o.z*dB.y) };
 			
-			 float2 gradS = make_float2(dalpha_dB * B, dalpha_dB * B);
-			 gradS.x *= C_dB.x;  gradS.y *= C_dB.y;
-			 atomicAdd(&dL_dskews2D[gid].x, dL_dalpha * gradS.x);
-			 atomicAdd(&dL_dskews2D[gid].y, dL_dalpha * gradS.y);
+			 float2 gradS;
+			 gradS.x = dalpha_dB * B * C_dB.x;
+			 gradS.y = dalpha_dB * B * C_dB.y;
+			 atomicAdd(&dL_dskews2D[gid].x,
+					-dL_dalpha * gradS.x * ddelx_dx);   
+			 atomicAdd(&dL_dskews2D[gid].y,
+					-dL_dalpha * gradS.y * ddely_dy); 
+				
  
 			 // -- mean2D
-			 const float2 C_d  = { C4.x*d.x + C4.y*d.y,
-								   C4.y*d.x + C4.z*d.y };
-			 float2 g = { dalpha_dA * C_d.x + dalpha_dB * B * C_dB.x,
-  	 						dalpha_dA * C_d.y + dalpha_dB * B * C_dB.y };
+			 const float2 C_d  = {  -(con_o.x*d.x  + con_o.y*d.y),
+									-(con_o.y*d.x  + con_o.z*d.y) };
+
+			const float invA = 1.f / A;
+
+			float2 g;
+			g.x = dalpha_dA * A * C_d.x + dalpha_dB * B * C_dB.x;
+			g.y = dalpha_dA * A * C_d.y + dalpha_dB * B * C_dB.y;
+
+			atomicAdd(&dL_dmean2D[gid].x, dL_dalpha *  g.x * ddelx_dx);
+			atomicAdd(&dL_dmean2D[gid].y, dL_dalpha *  g.y * ddely_dy);
  
-			 atomicAdd(&dL_dmean2D[gid].x, dL_dalpha * A * g.x * ddelx_dx);
-			 atomicAdd(&dL_dmean2D[gid].y, dL_dalpha * A * g.y * ddely_dy);
- 
-			 last_alpha = alpha;
+			// -- opacidad base o
+			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
         }
     }
-}
-
-#define CUDA_CHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, const char* file, int line)
-{
-    if (code != cudaSuccess)
-        printf("CUDA-ERROR %s %s:%d\n", cudaGetErrorString(code), file, line);
 }
 
 void BACKWARD::preprocess(
@@ -768,7 +761,6 @@ void BACKWARD::preprocess(
 		tan_fovx, tan_fovy,
 		campos,
 		(float3*)dL_dmean2D,
-		(float4*)dL_dconic2D,
 		(float3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
@@ -779,8 +771,6 @@ void BACKWARD::preprocess(
 		dL_dscale,
 		dL_drot,
 		dL_dopacity);
-		//CUDA_CHECK( cudaGetLastError() );
-		//CUDA_CHECK( cudaDeviceSynchronize() );
 }
 
 void BACKWARD::render(
@@ -830,6 +820,4 @@ void BACKWARD::render(
 		dL_dcolors,
 		dL_dinvdepths
 		);
-		//CUDA_CHECK( cudaGetLastError() );
-		//CUDA_CHECK( cudaDeviceSynchronize() );
 }

@@ -245,24 +245,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
 			
-	// Convert skews[idx] (glm::vec3) to float3
-	float3 skew_w = {
-		skews[idx].x,
-		skews[idx].y,
-		skews[idx].z
-	};
-
-	// Transform skew vector to camera space (rotation only, no translation)
-	float3 skew_cam = {
-		viewmatrix[0] * skew_w.x + viewmatrix[4] * skew_w.y + viewmatrix[8]  * skew_w.z,
-		viewmatrix[1] * skew_w.x + viewmatrix[5] * skew_w.y + viewmatrix[9]  * skew_w.z,
-		viewmatrix[2] * skew_w.x + viewmatrix[6] * skew_w.y + viewmatrix[10] * skew_w.z
-	};
 
 	float3 p_skew_world = {
-		p_orig.x + skew_w.x,
-		p_orig.y + skew_w.y,
-		p_orig.z + skew_w.z
+		p_orig.x + skews[idx].x,
+		p_orig.y + skews[idx].y,
+		p_orig.z + skews[idx].z
 	};
 	
 	float4 p_skew_h = transformPoint4x4(p_skew_world, projmatrix);
@@ -401,21 +388,17 @@ renderCUDA(
             float sx = skews2D[id].x;
 			float sy = skews2D[id].y;
 
-            
-			
             float2 dB    = { d.x - sx, d.y - sy };
             float powerB = -0.5f * (con_o.x * dB.x*dB.x
                                     + con_o.z * dB.y*dB.y)
                            - con_o.y * dB.x * dB.y;
-			float B = con_o.w * expf(powerB);
+			float B = expf(powerB);
 
-            // --- apply the skew‐mask: A * (1 – exp(–100 * B)) ---
+            // --- apply the skew‐mask: A * (1 – exp(–S * B)) ---
             float mask      = 1.0f - expf(-skew_sensitivity[id] * B);
-            float alpha_raw = min(0.99f, A);
-            float alpha     = alpha_raw * mask;
+            float alpha = min(0.99f, A*mask);
 
-			//printf("Gaussian ID: %d, sx: %.6f, sy: %.6f\n A: %.6f, B: %.6f, mask: %.6f, alpha: %.6f\n", id, sx, sy, A, B, mask, alpha);
-            if (alpha < 1.0f / 255.0f)
+			if (alpha < 1.0f / 255.0f)
                 continue;
 
             // front‐to‐back compositing
@@ -447,13 +430,6 @@ renderCUDA(
 		if (invdepth)
 			invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
 	}
-}
-
-#define CUDA_CHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, const char* file, int line)
-{
-    if (code != cudaSuccess)
-        printf("CUDA-ERROR %s %s:%d\n", cudaGetErrorString(code), file, line);
 }
 
 void FORWARD::render(
@@ -488,8 +464,6 @@ void FORWARD::render(
 		out_color,
 		depths, 
 		depth);
-		//CUDA_CHECK( cudaGetLastError() );
-		//CUDA_CHECK( cudaDeviceSynchronize() );
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -553,6 +527,4 @@ void FORWARD::preprocess(int P, int D, int M,
 		prefiltered,
 		antialiasing
 		);
-		CUDA_CHECK( cudaGetLastError() );
-		CUDA_CHECK( cudaDeviceSynchronize() );
 }
